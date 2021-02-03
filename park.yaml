@@ -1,0 +1,9 @@
+train: /content/train.txt
+val: /content/valid.txt
+test: /content/test.txt
+
+# number of classes
+nc: 2
+
+# class names
+names: ['empty', 'occupied']
