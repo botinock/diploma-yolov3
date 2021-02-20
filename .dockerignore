@@ -9,7 +9,7 @@ storage.googleapis.com
 
 data/samples/*
 **/results*.txt
-*.jpg
+# *.jpg
 
 # Neural Network weights -----------------------------------------------------------------------------------------------
 **/*.weights
