@@ -6,7 +6,8 @@ import matplotlib.pyplot as plt
 import numpy as np
 import torch
 
-from . import general
+from . import general_rotate
+from utils.rotated.oriented_iou_loss import cal_iou
 
 
 def fitness(x):
@@ -122,10 +123,16 @@ class ConfusionMatrix:
         Returns:
             None, updates confusion matrix accordingly
         """
-        detections = detections[detections[:, 4] > self.conf]
+        # print(detections)
+        detections = detections[detections[:, 5] > self.conf]
         gt_classes = labels[:, 0].int()
-        detection_classes = detections[:, 5].int()
-        iou = general.box_iou(labels[:, 1:], detections[:, :4])
+        # detection_classes = detections[:, 5].int()
+        detection_classes = detections[:, 6].int()
+        # iou = general.box_iou(labels[:, 1:], detections[:, :4])
+        # if detections[:, :5].shape[0]:
+        iou = cal_iou(labels[:, 1:].view([labels[:, 1:].shape[0], 1, 5]).expand([-1, detections[:, :5].shape[0], -1]),
+                  detections[:, :5].view([1, detections[:, :5].shape[0], 5]).expand([labels[:, 1:].shape[0], -1, -1]))[0].clone()
+        
 
         x = torch.where(iou > self.iou_thres)
         if x[0].shape[0]:
@@ -145,12 +152,12 @@ class ConfusionMatrix:
             if n and sum(j) == 1:
                 self.matrix[gc, detection_classes[m1[j]]] += 1  # correct
             else:
-                self.matrix[gc, self.nc] += 1  # background FP
+                self.matrix[self.nc, gc] += 1  # background FP
 
         if n:
             for i, dc in enumerate(detection_classes):
                 if not any(m1 == i):
-                    self.matrix[self.nc, dc] += 1  # background FN
+                    self.matrix[dc, self.nc] += 1  # background FN
 
     def matrix(self):
         return self.matrix
@@ -166,8 +173,8 @@ class ConfusionMatrix:
             sn.set(font_scale=1.0 if self.nc < 50 else 0.8)  # for label size
             labels = (0 < len(names) < 99) and len(names) == self.nc  # apply names to ticklabels
             sn.heatmap(array, annot=self.nc < 30, annot_kws={"size": 8}, cmap='Blues', fmt='.2f', square=True,
-                       xticklabels=names + ['background FN'] if labels else "auto",
-                       yticklabels=names + ['background FP'] if labels else "auto").set_facecolor((1, 1, 1))
+                       xticklabels=names + ['background FP'] if labels else "auto",
+                       yticklabels=names + ['background FN'] if labels else "auto").set_facecolor((1, 1, 1))
             fig.axes[0].set_xlabel('True')
             fig.axes[0].set_ylabel('Predicted')
             fig.savefig(Path(save_dir) / 'confusion_matrix.png', dpi=250)

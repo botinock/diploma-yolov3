@@ -10,6 +10,7 @@ import re
 import subprocess
 import time
 from pathlib import Path
+import time
 
 import cv2
 import numpy as np
@@ -213,13 +214,80 @@ def xyxy2xywh(x):
 
 
 def xywh2xyxy(x):
-    # Convert nx4 boxes from [x, y, w, h] to [x1, y1, x2, y2] where xy1=top-left, xy2=bottom-right
+    # Convert nx4 boxes from [x, y, w, h, a] to [x1, y1, x2, y2] where xy1=top-left, xy2=bottom-right
+    y = x[...,:4].clone() if isinstance(x, torch.Tensor) else np.copy(x[...,:4])
+    angle = x[:, 4]
+    cos_a = torch.cos(angle) if isinstance(x, torch.Tensor) else np.cos(angle)
+    sin_a = torch.sin(angle) if isinstance(x, torch.Tensor) else np.sin(angle)
+    # y[:, 0] = x[:, 0] - x[:, 2] / 2  # top left x
+    # y[:, 1] = x[:, 1] - x[:, 3] / 2  # top left y
+    # y[:, 2] = x[:, 0] + x[:, 2] / 2  # bottom right x
+    # y[:, 3] = x[:, 1] + x[:, 3] / 2  # bottom right y
+    x_c = x[:, 0]
+    y_c = x[:, 1]
+    x_min = x[:, 0] - x[:, 2] / 2
+    y_min = x[:, 1] - x[:, 3] / 2
+    x_max = x[:, 0] + x[:, 2] / 2
+    y_max = x[:, 1] + x[:, 3] / 2    
+    # cos(angle) * (p.x - cx) - sin(angle) * (p.y - cy) + cx
+    # sin(angle) * (p.x - cx) + cos(angle) * (p.y - cy) + cy
+    x0 = cos_a * (x_min - x_c) - sin_a * (y_min - y_c) + x_c
+    y0 = sin_a * (x_min - x_c) + cos_a * (y_min - y_c) + y_c
+    x1 = cos_a * (x_min - x_c) - sin_a * (y_max - y_c) + x_c
+    y1 = sin_a * (x_min - x_c) + cos_a * (y_max - y_c) + y_c
+    x2 = cos_a * (x_max - x_c) - sin_a * (y_max - y_c) + x_c
+    y2 = sin_a * (x_max - x_c) + cos_a * (y_max - y_c) + y_c
+    x3 = cos_a * (x_max - x_c) - sin_a * (y_min - y_c) + x_c
+    y3 = sin_a * (x_max - x_c) + cos_a * (y_min - y_c) + y_c
+    y[:, 0] = torch.minimum(x0, x1) if isinstance(x, torch.Tensor) else np.minimum(x0, x1)
+    y[:, 1] = torch.minimum(y0, y1) if isinstance(x, torch.Tensor) else np.minimum(y0, y1)
+    y[:, 2] = torch.maximum(x2, x3) if isinstance(x, torch.Tensor) else np.maximum(x2, x3)
+    y[:, 3] = torch.maximum(y2, y3) if isinstance(x, torch.Tensor) else np.maximum(y2, y3)
+    return y
+
+
+def xywha2xyxya(x):
     y = x.clone() if isinstance(x, torch.Tensor) else np.copy(x)
     y[:, 0] = x[:, 0] - x[:, 2] / 2  # top left x
     y[:, 1] = x[:, 1] - x[:, 3] / 2  # top left y
     y[:, 2] = x[:, 0] + x[:, 2] / 2  # bottom right x
     y[:, 3] = x[:, 1] + x[:, 3] / 2  # bottom right y
     return y
+
+
+def xyxya2xywha(x):
+    y = x.clone() if isinstance(x, torch.Tensor) else np.copy(x)
+    y[:, 0] = (x[:, 0] + x[:, 2]) / 2  # x center
+    y[:, 1] = (x[:, 1] + x[:, 3]) / 2  # y center
+    y[:, 2] = x[:, 2] - x[:, 0]  # width
+    y[:, 3] = x[:, 3] - x[:, 1]  # height
+    return y
+
+
+def get_rotated_coors(box):
+    assert len(box) > 0 , 'Input valid box!'
+    cx = box[0]; cy = box[1]; w = box[2]; h = box[3]; a = box[4]
+    xmin = cx - w*0.5; xmax = cx + w*0.5; ymin = cy - h*0.5; ymax = cy + h*0.5
+    t_x0=xmin; t_y0=ymin; t_x1=xmin; t_y1=ymax; t_x2=xmax; t_y2=ymax; t_x3=xmax; t_y3=ymin
+    R = np.eye(3)
+    R[:2] = cv2.getRotationMatrix2D(angle=-int(a*180/math.pi), center=(cx,cy), scale=1)
+    x0 = t_x0*R[0,0] + t_y0*R[0,1] + R[0,2] 
+    y0 = t_x0*R[1,0] + t_y0*R[1,1] + R[1,2] 
+    x1 = t_x1*R[0,0] + t_y1*R[0,1] + R[0,2] 
+    y1 = t_x1*R[1,0] + t_y1*R[1,1] + R[1,2] 
+    x2 = t_x2*R[0,0] + t_y2*R[0,1] + R[0,2] 
+    y2 = t_x2*R[1,0] + t_y2*R[1,1] + R[1,2] 
+    x3 = t_x3*R[0,0] + t_y3*R[0,1] + R[0,2] 
+    y3 = t_x3*R[1,0] + t_y3*R[1,1] + R[1,2] 
+
+    if isinstance(x0,torch.Tensor):
+        r_box=torch.cat([x0.unsqueeze(0),y0.unsqueeze(0),
+                         x1.unsqueeze(0),y1.unsqueeze(0),
+                         x2.unsqueeze(0),y2.unsqueeze(0),
+                         x3.unsqueeze(0),y3.unsqueeze(0)], 0)
+    else:
+        r_box = np.array([x0,y0,x1,y1,x2,y2,x3,y3])
+    return r_box
 
 
 def scale_coords(img1_shape, coords, img0_shape, ratio_pad=None):
@@ -231,8 +299,8 @@ def scale_coords(img1_shape, coords, img0_shape, ratio_pad=None):
         gain = ratio_pad[0][0]
         pad = ratio_pad[1]
 
-    coords[:, [0, 2]] -= pad[0]  # x padding
-    coords[:, [1, 3]] -= pad[1]  # y padding
+    coords[:, [0]] -= pad[0]  # x padding
+    coords[:, [1]] -= pad[1]  # y padding
     coords[:, :4] /= gain
     clip_coords(coords, img0_shape)
     return coords
@@ -324,6 +392,70 @@ def wh_iou(wh1, wh2):
     return inter / (wh1.prod(2) + wh2.prod(2) - inter)  # iou = inter / (area1 + area2 - inter)
 
 
+def nms_rotate(boxes: torch.Tensor, scores: torch.Tensor, iou_threshold: float, batches: int):
+    """
+        boxes: Tensor[N, 5] - x, y, w, h, theta
+        scores: Tensor[N]
+        iou_threshold: 0.0-1.0
+    """
+    # time_iou = time.time()
+    # print(shape)
+    with torch.no_grad():
+        shape = boxes.shape[0]
+        iou = torch.empty(shape, shape, device=boxes.device)
+        if shape > 500:
+            for i in range(batches):
+                for j in range(batches):
+                    sh_i_from = (shape//batches + 1)*i
+                    sh_j_from = (shape//batches + 1)*j
+                    sh_i_to = (shape//batches + 1)*(i + 1)
+                    sh_j_to = (shape//batches + 1)*(j + 1)
+                    if i == batches - 1:
+                        sh_i_to = shape
+                    if j == batches - 1:
+                        sh_j_to = shape
+                        #придумать что сделать с последним батчем
+                    box1 = boxes[sh_i_from:sh_i_to].view([sh_i_to-sh_i_from, 1, 5]).expand([-1, sh_j_to-sh_j_from, -1])
+                    box2 = boxes[sh_j_from:sh_j_to].view([1, sh_j_to-sh_j_from, 5]).expand([sh_i_to-sh_i_from, -1, -1])
+                    iou[sh_i_from:sh_i_to, sh_j_from:sh_j_to] = cal_iou(box1, box2)[0]
+        else:
+            box1 = boxes.view([shape, 1, 5]).expand([-1, shape, -1])
+            box2 = boxes.view([1, shape, 5]).expand([shape, -1, -1])
+            iou = cal_iou(box1, box2)[0]
+        mask_iou = iou > iou_threshold
+        mask_scores = scores.unsqueeze(1) > scores
+        # ind = np.diag_indices(mask_scores.shape[0])
+        # mask_scores[ind[0], ind[1]] = torch.zeros(mask_scores.shape[0], dtype=bool, device=boxes.device)
+        indices = torch.nonzero(~(mask_iou & mask_scores).sum(axis=0, dtype=bool)).squeeze()
+
+    # iou = cal_iou(boxes.view([shape, 1, 5]).expand([-1, shape, -1]), 
+    #               boxes.view([1, shape, 5]).expand([shape, -1, -1]))[0]
+
+    # print('time for iou: ', (time.time() - time_iou), ' seconds')
+
+    # time_nms = time.time()
+
+    # indices = []
+    # scores_cpu = scores.cpu()
+    # iou_cpu = iou.cpu()
+    # for i in range(boxes.shape[0]):
+    #     is_add = True
+    #     for j in range(boxes.shape[0]):
+    #         if iou[i, j] > iou_threshold and scores[i] < scores[j]:
+    #             is_add = False
+    #             break
+    #     if is_add:
+    #         indices.append(i)
+    # del mask_iou
+    # del mask_scores
+    # del iou
+    # del scores_cpu
+    # del iou_cpu
+    # print('time for nms: ', (time.time() - time_nms), ' seconds')
+
+    return indices #torch.tensor(indices, device=boxes.device)
+
+
 def non_max_suppression(prediction, conf_thres=0.25, iou_thres=0.45, classes=None, agnostic=False, labels=()):
     """Performs Non-Maximum Suppression (NMS) on inference results
 
@@ -331,20 +463,21 @@ def non_max_suppression(prediction, conf_thres=0.25, iou_thres=0.45, classes=Non
          detections with shape: nx6 (x1, y1, x2, y2, conf, cls)
     """
 
-    nc = prediction.shape[2] - 5  # number of classes
-    xc = prediction[..., 4] > conf_thres  # candidates
+    nc = prediction.shape[2] - 6  # number of classes
+    xc = prediction[..., 5] > conf_thres  # candidates
 
     # Settings
     min_wh, max_wh = 2, 4096  # (pixels) minimum and maximum box width and height
-    max_det = 300  # maximum number of detections per image
+    max_det = 500  # maximum number of detections per image
     max_nms = 30000  # maximum number of boxes into torchvision.ops.nms()
     time_limit = 10.0  # seconds to quit after
     redundant = True  # require redundant detections
     multi_label = nc > 1  # multiple labels per box (adds 0.5ms/img)
     merge = False  # use merge-NMS
+    agnostic=True
 
     t = time.time()
-    output = [torch.zeros((0, 6), device=prediction.device)] * prediction.shape[0]
+    output = [torch.zeros((0, 7), device=prediction.device)] * prediction.shape[0]
     for xi, x in enumerate(prediction):  # image index, image inference
         # Apply constraints
         # x[((x[..., 2:4] < min_wh) | (x[..., 2:4] > max_wh)).any(1), 4] = 0  # width-height
@@ -353,10 +486,10 @@ def non_max_suppression(prediction, conf_thres=0.25, iou_thres=0.45, classes=Non
         # Cat apriori labels if autolabelling
         if labels and len(labels[xi]):
             l = labels[xi]
-            v = torch.zeros((len(l), nc + 5), device=x.device)
-            v[:, :4] = l[:, 1:5]  # box
-            v[:, 4] = 1.0  # conf
-            v[range(len(l)), l[:, 0].long() + 5] = 1.0  # cls
+            v = torch.zeros((len(l), nc + 6), device=x.device)
+            v[:, :5] = l[:, 1:6]  # box
+            v[:, 5] = 1.0  # conf
+            v[range(len(l)), l[:, 0].long() + 6] = 1.0  # cls
             x = torch.cat((x, v), 0)
 
         # If none remain process next image
@@ -364,22 +497,23 @@ def non_max_suppression(prediction, conf_thres=0.25, iou_thres=0.45, classes=Non
             continue
 
         # Compute conf
-        x[:, 5:] *= x[:, 4:5]  # conf = obj_conf * cls_conf
+        x[:, 6:] *= x[:, 5:6]  # conf = obj_conf * cls_conf
 
         # Box (center x, center y, width, height) to (x1, y1, x2, y2)
-        box = xywh2xyxy(x[:, :4])
+        # box = xywh2xyxy(x[:, :4])
+        box = x[:, :5]
 
         # Detections matrix nx6 (xyxy, conf, cls)
         if multi_label:
-            i, j = (x[:, 5:] > conf_thres).nonzero(as_tuple=False).T
-            x = torch.cat((box[i], x[i, j + 5, None], j[:, None].float()), 1)
+            i, j = (x[:, 6:] > conf_thres).nonzero(as_tuple=False).T
+            x = torch.cat((box[i], x[i, j + 6, None], j[:, None].float()), 1)
         else:  # best class only
-            conf, j = x[:, 5:].max(1, keepdim=True)
+            conf, j = x[:, 6:].max(1, keepdim=True)
             x = torch.cat((box, conf, j.float()), 1)[conf.view(-1) > conf_thres]
 
         # Filter by class
         if classes is not None:
-            x = x[(x[:, 5:6] == torch.tensor(classes, device=x.device)).any(1)]
+            x = x[(x[:, 6:7] == torch.tensor(classes, device=x.device)).any(1)]
 
         # Apply finite constraint
         # if not torch.isfinite(x).all():
@@ -390,21 +524,26 @@ def non_max_suppression(prediction, conf_thres=0.25, iou_thres=0.45, classes=Non
         if not n:  # no boxes
             continue
         elif n > max_nms:  # excess boxes
-            x = x[x[:, 4].argsort(descending=True)[:max_nms]]  # sort by confidence
+            x = x[x[:, 5].argsort(descending=True)[:max_nms]]  # sort by confidence
 
         # Batched NMS
-        c = x[:, 5:6] * (0 if agnostic else max_wh)  # classes
-        boxes, scores = x[:, :4] + c, x[:, 4]  # boxes (offset by class), scores
-        i = torchvision.ops.nms(boxes, scores, iou_thres)  # NMS
+        c = x[:, 6:7] * (0 if agnostic else max_wh)  # classes
+        boxes, scores = x[:, :5], x[:, 5]  # boxes (offset by class), scores
+        boxes[:, :2] += c
+
+        i = torchvision.ops.nms(xywh2xyxy(boxes), scores, iou_thres)
+        
+        # i = nms_rotate(boxes, scores, iou_thres, batches=2)  # NMS
         if i.shape[0] > max_det:  # limit detections
             i = i[:max_det]
-        if merge and (1 < n < 3E3):  # Merge NMS (boxes merged using weighted mean)
-            # update boxes as boxes(i,4) = weights(i,n) * boxes(n,4)
-            iou = cal_iou(boxes[i], boxes) > iou_thres  # iou matrix
-            weights = iou * scores[None]  # box weights
-            x[i, :4] = torch.mm(weights, x[:, :4]).float() / weights.sum(1, keepdim=True)  # merged boxes
-            if redundant:
-                i = i[iou.sum(1) > 1]  # require redundancy
+        # if merge and (1 < n < 3E3):  # Merge NMS (boxes merged using weighted mean)
+        #     # update boxes as boxes(i,4) = weights(i,n) * boxes(n,4)
+        #     iou = cal_iou(boxes[i].view([boxes[i].shape[0], 1, 5]).repeat([1, boxes[i].shape[0], 1]), 
+        #                   boxes.view([1, boxes.shape[0], 5]).repeat([boxes.shape[0], 1, 1]))[0] > iou_thres  # iou matrix
+        #     weights = iou * scores[None]  # box weights
+        #     x[i, :5] = torch.mm(weights, x[:, :5]).float() / weights.sum(1, keepdim=True)  # merged boxes
+        #     if redundant:
+        #         i = i[iou.sum(1) > 1]  # require redundancy
 
         output[xi] = x[i]
         if (time.time() - t) > time_limit:

@@ -155,7 +155,7 @@ def calculate_area(idx_sorted:torch.Tensor, vertices:torch.Tensor):
     selected = torch.gather(vertices, 2, idx_ext)
     total = selected[:, :, 0:-1, 0]*selected[:, :, 1:, 1] - selected[:, :, 0:-1, 1]*selected[:, :, 1:, 0]
     total = torch.sum(total, dim=2)
-    area = torch.abs(total) / 2
+    area = torch.abs(total) / 2 + 1e-8
     return area, selected
 
 def oriented_box_intersection_2d(corners1:torch.Tensor, corners2:torch.Tensor):

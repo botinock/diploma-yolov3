@@ -49,11 +49,25 @@ def cal_iou(box1:torch.Tensor, box2:torch.Tensor):
     """
     corners1 = box2corners_th(box1)
     corners2 = box2corners_th(box2)
+    # if len(torch.nonzero(torch.isnan(box1))) != 0 or len(torch.nonzero(torch.isnan(box2))) != 0:
+    #     print(box1)
+    #     print(box2)
     inter_area, _ = oriented_box_intersection_2d(corners1, corners2)        #(B, N)
     area1 = box1[:, :, 2] * box1[:, :, 3]
     area2 = box2[:, :, 2] * box2[:, :, 3]
-    u = area1 + area2 - inter_area
+    u = area1 + area2 - inter_area + 1e-8
     iou = inter_area / u
+    # for i, j in torch.nonzero(torch.isnan(iou)):
+    #     print(torch.nonzero(torch.isnan(iou)))
+    #     print(box1[i, j])
+    #     print(box2[i, j])
+    #     print(corners1[i, j])
+    #     print(corners2[i, j])
+    #     print(iou[i, j])
+    #     print(inter_area[i, j])
+    #     print(u[i, j])
+    #     print('next')
+    # iou = torch.where(torch.isnan(iou), torch.zeros_like(iou), iou)
     return iou, corners1, corners2, u
 
 def cal_diou(box1:torch.Tensor, box2:torch.Tensor, enclosing_type:str="smallest"):
@@ -65,18 +79,18 @@ def cal_diou(box1:torch.Tensor, box2:torch.Tensor, enclosing_type:str="smallest"
     """
     iou, corners1, corners2, u = cal_iou(box1, box2)
     w, h = enclosing_box(corners1, corners2, enclosing_type)
-    c2 = w*w + h*h      # (B, N)
+    c2 = w*w + h*h + 1e-8     # (B, N)
     x_offset = box1[...,0] - box2[..., 0]
     y_offset = box1[...,1] - box2[..., 1]
-    d2 = x_offset*x_offset + y_offset*y_offset
-    diou_loss = 1. - iou + d2/c2
-    return diou_loss, iou
+    d2 = x_offset*x_offset + y_offset*y_offset + 1e-8
+    diou_loss = 1. - iou + d2/c2 #+ (box1[..., 4] - box2[..., 4]) ** 2
+    return diou_loss, iou #torch.clamp(diou_loss, min=-1000, max=1000), torch.clamp(iou, min=-1000, max=1000)
 
 def cal_giou(box1:torch.Tensor, box2:torch.Tensor, enclosing_type:str="smallest"):
     iou, corners1, corners2, u = cal_iou(box1, box2)
     w, h = enclosing_box(corners1, corners2, enclosing_type)
-    area_c =  w*h
-    giou_loss = 1. - iou + ( area_c - u )/area_c
+    area_c =  w*h + 1e-8
+    giou_loss = 1. - iou + (area_c - u)/area_c
     return giou_loss, iou
 
 def cal_iou_3d(box3d1:torch.Tensor, box3d2:torch.Tensor, verbose=False):

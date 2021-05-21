@@ -20,17 +20,17 @@ from torch.nn.parallel import DistributedDataParallel as DDP
 from torch.utils.tensorboard import SummaryWriter
 from tqdm import tqdm
 
-import test  # import test.py to get mAP after each epoch
+import test_rotate as test  # import test.py to get mAP after each epoch
 from models.experimental import attempt_load
 from models.yolo_rotate import Model
 from utils.autoanchor import check_anchors
-from utils.daFtasets import create_dataloader
-from utils.general import labels_to_class_weights, increment_path, labels_to_image_weights, init_seeds, \
+from utils.datasets_rotate import create_dataloader
+from utils.general_rotate import labels_to_class_weights, increment_path, labels_to_image_weights, init_seeds, \
     fitness, strip_optimizer, get_latest_run, check_dataset, check_file, check_git_status, check_img_size, \
     check_requirements, print_mutation, set_logging, one_cycle, colorstr
 from utils.google_utils import attempt_download
-from utils.loss import compute_loss
-from utils.plots import plot_images, plot_labels, plot_results, plot_evolution
+from utils.loss_rotate import compute_loss
+from utils.plots_rotate import plot_images, plot_labels, plot_results, plot_evolution
 from utils.torch_utils import ModelEMA, select_device, intersect_dicts, torch_distributed_zero_first
 
 logger = logging.getLogger(__name__)
@@ -55,7 +55,7 @@ def train(hyp, opt, device, tb_writer=None, wandb=None):
         yaml.dump(vars(opt), f, sort_keys=False)
 
     # Configure
-    plots = not opt.evolve  # create plots
+    plots = True #not opt.evolve  # create plots
     cuda = device.type != 'cpu'
     init_seeds(2 + rank)
     with open(opt.data) as f:
@@ -180,9 +180,9 @@ def train(hyp, opt, device, tb_writer=None, wandb=None):
 
     # Trainloader
     dataloader, dataset = create_dataloader(train_path, imgsz, batch_size, gs, opt,
-                                            hyp=hyp, augment=True, cache=opt.cache_images, rect=opt.rect, rank=rank,
+                                            hyp=hyp, augment=True, cache=opt.cache_images, rect=False, rank=rank,
                                             world_size=opt.world_size, workers=opt.workers,
-                                            image_weights=opt.image_weights, quad=opt.quad, prefix=colorstr('train: '))
+                                            image_weights=opt.image_weights, quad=False, prefix=colorstr('train: '))
     mlc = np.concatenate(dataset.labels, 0)[:, 0].max()  # max label class
     nb = len(dataloader)  # number of batches
     assert mlc < nc, 'Label class %g exceeds nc=%g in %s. Possible class labels are 0-%g' % (mlc, nc, opt.data, nc - 1)
@@ -191,7 +191,7 @@ def train(hyp, opt, device, tb_writer=None, wandb=None):
     if rank in [-1, 0]:
         ema.updates = start_epoch * nb // accumulate  # set EMA updates
         testloader = create_dataloader(test_path, imgsz_test, total_batch_size, gs, opt,  # testloader
-                                       hyp=hyp, cache=opt.cache_images and not opt.notest, rect=True, rank=-1,
+                                       hyp=hyp, cache=opt.cache_images and not opt.notest, rect=False, rank=-1,
                                        world_size=opt.world_size, workers=opt.workers,
                                        pad=0.5, prefix=colorstr('val: '))[0]
 
@@ -226,7 +226,7 @@ def train(hyp, opt, device, tb_writer=None, wandb=None):
     maps = np.zeros(nc)  # mAP per class
     results = (0, 0, 0, 0, 0, 0, 0)  # P, R, mAP@.5, mAP@.5-.95, val_loss(box, obj, cls)
     scheduler.last_epoch = start_epoch - 1  # do not move
-    scaler = amp.GradScaler(enabled=cuda)
+    # scaler = amp.GradScaler(enabled=cuda)
     logger.info(f'Image sizes {imgsz} train, {imgsz_test} test\n'
                 f'Using {dataloader.num_workers} dataloader workers\n'
                 f'Logging results to {save_dir}\n'
@@ -284,25 +284,47 @@ def train(hyp, opt, device, tb_writer=None, wandb=None):
                     imgs = F.interpolate(imgs, size=ns, mode='bilinear', align_corners=False)
 
             # Forward
-            with amp.autocast(enabled=cuda):
-                pred = model(imgs)  # forward
-                loss, loss_items = compute_loss(pred, targets.to(device), model)  # loss scaled by batch_size
-                if rank != -1:
-                    loss *= opt.world_size  # gradient averaged between devices in DDP mode
-                if opt.quad:
-                    loss *= 4.
+            # with amp.autocast(enabled=cuda):
+            #     pred = model(imgs)  # forward
+            #     # with torch.no_grad():
+            #     #     for p in pred:
+            #     #         p.clamp_(min=1e-2)
+            #     loss, loss_items = compute_loss(pred, targets.to(device), model)  # loss scaled by batch_size
+            #     if rank != -1:
+            #         loss *= opt.world_size  # gradient averaged between devices in DDP mode
+            #     if opt.quad:
+            #         loss *= 4.
+            pred = model(imgs)
+            loss, loss_items = compute_loss(pred, targets.to(device), model)  # loss scaled by batch_size
+            if rank != -1:
+                loss *= opt.world_size  # gradient averaged between devices in DDP mode
+            if opt.quad:
+                loss *= 4.
 
             # Backward
-            scaler.scale(loss).backward()
+            # loss.retain_grad()
+            # scaler.scale(loss).backward()
+            loss.backward()
+            # print(loss.grad)
+            # for name, param in model.named_parameters():
+            #     print(name, param.grad.abs().max())
 
             # Optimize
             if ni % accumulate == 0:
-                scaler.step(optimizer)  # optimizer.step
-                scaler.update()
+
+                # scaler.step(optimizer)  # optimizer.step
+                # scaler.update()
+                optimizer.step()
+                # for p in model.parameters():
+                #     print(p.grad.norm())
                 optimizer.zero_grad()
                 if ema:
                     ema.update(model)
-
+            # for p in model.parameters():
+            #     print(p.grad.norm())
+            # print(model.state_dict().keys())
+            # print(model.Detect.weight.grad)
+            # print(model.embs[0].weight.grad)
             # Print
             if rank in [-1, 0]:
                 mloss = (mloss * i + loss_items) / (i + 1)  # update mean losses
@@ -382,6 +404,7 @@ def train(hyp, opt, device, tb_writer=None, wandb=None):
                 torch.save(ckpt, last)
                 if best_fitness == fi:
                     torch.save(ckpt, best)
+                torch.save(model, wdir / 'model.pth')
                 del ckpt
         # end epoch ----------------------------------------------------------------------------------------------------
     # end training
@@ -414,7 +437,7 @@ def train(hyp, opt, device, tb_writer=None, wandb=None):
                                           imgsz=imgsz_test,
                                           conf_thres=conf,
                                           iou_thres=iou,
-                                          model=attempt_load(final, device).half(),
+                                          model=attempt_load(final, device),
                                           single_cls=opt.single_cls,
                                           dataloader=testloader,
                                           save_dir=save_dir,
@@ -432,12 +455,12 @@ def train(hyp, opt, device, tb_writer=None, wandb=None):
 if __name__ == '__main__':
     parser = argparse.ArgumentParser()
     parser.add_argument('--weights', type=str, default='yolov3.pt', help='initial weights path')
-    parser.add_argument('--cfg', type=str, default='', help='model.yaml path')
-    parser.add_argument('--data', type=str, default='data/coco128.yaml', help='data.yaml path')
+    parser.add_argument('--cfg', type=str, default='yolov3-rotate.yaml', help='model.yaml path')
+    parser.add_argument('--data', type=str, default='park.yaml', help='data.yaml path')
     parser.add_argument('--hyp', type=str, default='data/hyp.scratch.yaml', help='hyperparameters path')
-    parser.add_argument('--epochs', type=int, default=300)
-    parser.add_argument('--batch-size', type=int, default=16, help='total batch size for all GPUs')
-    parser.add_argument('--img-size', nargs='+', type=int, default=[640, 640], help='[train, test] image sizes')
+    parser.add_argument('--epochs', type=int, default=100)
+    parser.add_argument('--batch-size', type=int, default=8, help='total batch size for all GPUs')
+    parser.add_argument('--img-size', nargs='+', type=int, default=[384, 384], help='[train, test] image sizes')
     parser.add_argument('--rect', action='store_true', help='rectangular training')
     parser.add_argument('--resume', nargs='?', const=True, default=False, help='resume most recent training')
     parser.add_argument('--nosave', action='store_true', help='only save final checkpoint')
@@ -534,7 +557,7 @@ if __name__ == '__main__':
                 'obj_pw': (1, 0.5, 2.0),  # obj BCELoss positive_weight
                 'iou_t': (0, 0.1, 0.7),  # IoU training threshold
                 'anchor_t': (1, 2.0, 8.0),  # anchor-multiple threshold
-                'anchors': (2, 2.0, 10.0),  # anchors per output grid (0 to ignore)
+                # 'anchors': (2, 2.0, 10.0),  # anchors per output grid (0 to ignore)
                 'fl_gamma': (0, 0.0, 2.0),  # focal loss gamma (efficientDet default gamma=1.5)
                 'hsv_h': (1, 0.0, 0.1),  # image HSV-Hue augmentation (fraction)
                 'hsv_s': (1, 0.0, 0.9),  # image HSV-Saturation augmentation (fraction)

@@ -7,10 +7,10 @@ from pathlib import Path
 sys.path.append('./')  # to run '$ python *.py' files in subdirectories
 logger = logging.getLogger(__name__)
 
-from models.common import *
+from models.common_rotate import *
 from models.experimental import MixConv2d, CrossConv
 from utils.autoanchor import check_anchor_order
-from utils.general import make_divisible, check_file, set_logging
+from utils.general_rotate import make_divisible, check_file, set_logging
 from utils.torch_utils import time_synchronized, fuse_conv_and_bn, model_info, scale_img, initialize_weights, \
     select_device, copy_attr
 
@@ -52,6 +52,9 @@ class Detect(nn.Module):
                 y = x[i].sigmoid()
                 y[..., 0:2] = (y[..., 0:2] * 2. - 0.5 + self.grid[i].to(x[i].device)) * self.stride[i]  # xy
                 y[..., 2:4] = (y[..., 2:4] * 2) ** 2 * self.anchor_grid[i]  # wh
+                # y[..., 4:5] = torch.arcsin(y[..., 4:5])
+                y[..., 4:5] = y[..., 4:5]*np.pi/2
+                # y[..., 4:5] = y[..., 4:5].atan() * 2.
                 z.append(y.view(bs, -1, self.no))
 
         return x if self.training else (torch.cat(z, 1), x)
@@ -111,8 +114,12 @@ class Model(nn.Module):
                 yi[..., :4] /= si  # de-scale
                 if fi == 2:
                     yi[..., 1] = img_size[0] - yi[..., 1]  # de-flip ud
+                    yi[:, [2,3]] = yi[:, [3,2]]
+                    yi[:, 4] = math.pi/2 - yi[:, 4]
                 elif fi == 3:
                     yi[..., 0] = img_size[1] - yi[..., 0]  # de-flip lr
+                    yi[:, [2,3]] = yi[:, [3,2]]
+                    yi[:, 4] = math.pi/2 - yi[:, 4]
                 y.append(yi)
             return torch.cat(y, 1), None  # augmented inference, train
         else:
@@ -145,15 +152,15 @@ class Model(nn.Module):
         m = self.model[-1]  # Detect() module
         for mi, s in zip(m.m, m.stride):  # from
             b = mi.bias.view(m.na, -1)  # conv.bias(255) to (3,85)
-            b.data[:, 4] += math.log(8 / (640 / s) ** 2)  # obj (8 objects per 640 image)
-            b.data[:, 5:] += math.log(0.6 / (m.nc - 0.99)) if cf is None else torch.log(cf / cf.sum())  # cls
+            b.data[:, 5] += math.log(8 / (640 / s) ** 2)  # obj (8 objects per 640 image)
+            b.data[:, 6:] += math.log(0.6 / (m.nc - 0.99)) if cf is None else torch.log(cf / cf.sum())  # cls
             mi.bias = torch.nn.Parameter(b.view(-1), requires_grad=True)
 
     def _print_biases(self):
         m = self.model[-1]  # Detect() module
         for mi in m.m:  # from
             b = mi.bias.detach().view(m.na, -1).T  # conv.bias(255) to (3,85)
-            print(('%6g Conv2d.bias:' + '%10.3g' * 6) % (mi.weight.shape[1], *b[:5].mean(1).tolist(), b[5:].mean()))
+            print(('%6g Conv2d.bias:' + '%10.3g' * 6) % (mi.weight.shape[1], *b[:6].mean(1).tolist(), b[6:].mean()))
 
     # def _print_weights(self):
     #     for m in self.model.modules():
@@ -170,19 +177,19 @@ class Model(nn.Module):
         self.info()
         return self
 
-    def nms(self, mode=True):  # add or remove NMS module
-        present = type(self.model[-1]) is NMS  # last layer is NMS
-        if mode and not present:
-            print('Adding NMS... ')
-            m = NMS()  # module
-            m.f = -1  # from
-            m.i = self.model[-1].i + 1  # index
-            self.model.add_module(name='%s' % m.i, module=m)  # add
-            self.eval()
-        elif not mode and present:
-            print('Removing NMS... ')
-            self.model = self.model[:-1]  # remove
-        return self
+    # def nms(self, mode=True):  # add or remove NMS module
+    #     present = type(self.model[-1]) is NMS  # last layer is NMS
+    #     if mode and not present:
+    #         print('Adding NMS... ')
+    #         m = NMS()  # module
+    #         m.f = -1  # from
+    #         m.i = self.model[-1].i + 1  # index
+    #         self.model.add_module(name='%s' % m.i, module=m)  # add
+    #         self.eval()
+    #     elif not mode and present:
+    #         print('Removing NMS... ')
+    #         self.model = self.model[:-1]  # remove
+    #     return self
 
     def autoshape(self):  # add autoShape module
         print('Adding autoShape... ')
