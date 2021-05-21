@@ -53,8 +53,8 @@ class Detect(nn.Module):
                 y[..., 0:2] = (y[..., 0:2] * 2. - 0.5 + self.grid[i].to(x[i].device)) * self.stride[i]  # xy
                 y[..., 2:4] = (y[..., 2:4] * 2) ** 2 * self.anchor_grid[i]  # wh
                 # y[..., 4:5] = torch.arcsin(y[..., 4:5])
-                y[..., 4:5] = y[..., 4:5]*np.pi/2
-                # y[..., 4:5] = y[..., 4:5].atan() * 2.
+                # y[..., 4:5] = y[..., 4:5]*np.pi/2
+                y[..., 4:5] = y[..., 4:5].atan() * 2.
                 z.append(y.view(bs, -1, self.no))
 
         return x if self.training else (torch.cat(z, 1), x)

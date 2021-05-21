@@ -119,8 +119,8 @@ def compute_loss(p, targets, model):  # predictions, targets, model
             pxy = ps[:, :2].sigmoid() * 2. - 0.5
             pwh = (ps[:, 2:4].sigmoid() * 2) ** 2 * anchors[i]
             # ptheta = torch.arcsin(ps[:, 4:5].sigmoid())  # predict sinus of angle squeezing it by sigmoid and convert to radians by arcsin
-            # ptheta = ps[:, 4:5].sigmoid().atan() * 2.
-            ptheta = ps[:, 4:5].sigmoid()*np.pi/2
+            ptheta = ps[:, 4:5].sigmoid().atan() * 2.
+            # ptheta = ps[:, 4:5].sigmoid()*np.pi/2
             pbox = torch.cat((pxy, pwh, ptheta), 1)  # predicted box
             # print(torch.nonzero(torch.isnan(pbox)))
             # for i, j in torch.nonzero(torch.isnan(pbox)):
